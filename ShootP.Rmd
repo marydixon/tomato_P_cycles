@@ -1,0 +1,140 @@
+---
+title: "Shoot Phosphorus Concentration"
+author: "MD"
+date: "'r format(Sys.time(), '%b %d, %Y')'"
+output: 
+ html_document:
+   toc: true
+   toc_float: true
+   editor_options:
+     chunk_output_type: console
+   chunck_output_type: console
+   chunk_output_type: console
+---
+
+```{r}
+library(patchwork)
+library(tidyverse)
+library(emmeans)
+library(RColorBrewer)
+library(car)
+library(agricolae)
+```
+
+# Read in Data
+
+```{r}
+d <- read.csv('../Data/inputs/ShootP_Cycles.csv') %>% 
+  filter(!is.na(P.avg)) %>% 
+  filter(!is.na(P.mg.plant))
+```
+
+# Model Fitting
+
+```{r}
+par(mfrow=c(2,2))
+mod <- lm(P.avg ~ Fertilization*Domestication*Sterility, data = d)
+plot(mod)
+
+aov.mod <- aov(mod)
+summary(aov.mod)
+t <- HSD.test(mod,"Fertilization");t
+t <- HSD.test(mod,"Domestication");t
+t <- HSD.test(mod,"Fertilization");t
+
+res <- emmeans(mod, list(pairwise ~ Fertilization*Domestication), adjust = "fdr")
+res
+plot(res[[1]], horizontal=F)
+groups <- data.frame(multcomp::cld(res[[1]], adjust='fdr', Letters=c("abcdefghijklmnopqrstuvwxy"), decreasing=T))
+groups <- groups %>%
+  arrange(Fertilization, Domestication)
+
+sum_d <-summarise(group_by(d, Fertilization, Domestication,Sterility),
+  n = n(),
+  mean = mean((P.avg)),
+  sd = sd((P.avg)),
+  se = sd/sqrt(n))
+  left_join(.,groups, by = c('Fertilization', 'Domestication'))
+
+sum_d$letters <- ifelse(sum_d$Domestication=='M' & sum_d$Fertilization=='FF' , 'b',
+                        ifelse(sum_d$Domestication=='O'& sum_d$Fertilization=='FF','c',
+                               ifelse(sum_d$Domestication=='W' & sum_d$Fertilization=='FF','b',
+                                      ifelse(sum_d$Domestication=='M' & sum_d$Fertilization=='FU' , 'b',
+                        ifelse(sum_d$Domestication=='O'& sum_d$Fertilization=='FU','c',
+                               ifelse(sum_d$Domestication=='W' & sum_d$Fertilization=='FU','bc',
+                                      ifelse(sum_d$Domestication=='M' & sum_d$Fertilization=='UF' , 'c',
+                        ifelse(sum_d$Domestication=='O'& sum_d$Fertilization=='UF','c',
+                               ifelse(sum_d$Domestication=='W' & sum_d$Fertilization=='UF','bc',
+                                      ifelse(sum_d$Domestication=='M' & sum_d$Fertilization=='UU' , 'bc',
+                        ifelse(sum_d$Domestication=='O'& sum_d$Fertilization=='UU','c',
+                               ifelse(sum_d$Domestication=='W' & sum_d$Fertilization=='UU','a',NA))))))))))))
+
+
+
+level_order <- factor(sum_d$Domestication, levels=c('O',"M","W"))
+
+p<-ggplot(sum_d, aes(Fertilization, mean, fill = level_order)) +
+  geom_col(position = 'dodge') +
+ geom_text(aes(label = letters),position=position_dodge(0.9), vjust = -0.5, hjust = -0.2) +
+  scale_fill_manual(values = c('gray50','#3498db','#f39c12'), breaks=c("O","M","W"))+
+  labs(y='Shoot P Concentration (mg/kg)')+
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),position=position_dodge(0.9), width = .25)+
+  geom_hline(yintercept=0,color='gray50')+
+facet_wrap(~Sterility)+  
+ theme(axis.text=element_text(size=14, colour = "black"), 
+        axis.title=element_text(size=12,face="bold"),
+        axis.line = element_line(colour = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.title.x = element_blank());p
+```
+
+```{r}
+par(mfrow=c(2,2))
+mod <- lm((P.mg.plant) ~ Fertilization*Domestication*Sterility, data = d)
+plot(mod)
+
+aov.mod <- aov(mod)
+summary(aov.mod)
+t <- HSD.test(mod,"Fertilization");t
+t <- HSD.test(mod,"Domestication");t
+t <- HSD.test(mod,"Fertilization");t
+
+res <- emmeans(mod, list(pairwise ~ Fertilization*Domestication*Sterility), adjust = "fdr")
+res
+plot(res[[1]], horizontal=F)
+groups <- data.frame(multcomp::cld(res[[1]], adjust='fdr', Letters=c("abcdefghijklmnopqrstuvwxy"), decreasing=T))
+groups <- groups %>%
+  arrange(Fertilization, Domestication)
+
+sum_d <-summarise(group_by(d, Fertilization, Domestication,Sterility),
+  n = n(),
+  mean = mean((P.mg.plant)),
+  sd = sd((P.mg.plant)),
+  se = sd/sqrt(n)) 
+sum_d$letters <- ifelse(sum_d$Domestication=='M' , 'b',
+                        ifelse(sum_d$Domestication=='O','b',
+                               ifelse(sum_d$Domestication=='W','a',NA)))  
+
+level_order <- factor(sum_d$Domestication, levels=c('O',"M","W"))
+
+p<-ggplot(sum_d, aes(Fertilization, mean, fill = level_order)) +
+  geom_col(position = 'dodge') +
+ geom_text(aes(label = letters),position=position_dodge(0.9), vjust = -0.5, hjust = -0.2) +
+  scale_fill_manual(values = c('gray50','#3498db','#f39c12'), breaks=c("O","M","W"))+
+  labs(y='Shoot P Content (mg)')+
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),position=position_dodge(0.9), width = .25)+
+  geom_hline(yintercept=0,color='gray50')+
+  facet_wrap(~Sterility)+
+ theme(axis.text=element_text(size=14, colour = "black"), 
+        axis.title=element_text(size=12,face="bold"),
+        axis.line = element_line(colour = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.title.x = element_blank());p
+```
+
