@@ -1,0 +1,206 @@
+---
+title: "Relative Biomass and Phosphorus Stress Factor"
+author: "MD"
+date: "'r format(Sys.time(), '%b %d, %Y')'"
+output: 
+ html_document:
+   toc: true
+   toc_float: true
+   editor_options:
+     chunk_output_type: console
+   chunck_output_type: console
+   chunk_output_type: console
+---
+
+```{r}
+library(patchwork)
+library(tidyverse)
+library(emmeans)
+library(RColorBrewer)
+library(car)
+library(agricolae)
+```
+
+# Read in Data
+
+```{r}
+bio <- read.csv('../Data/inputs/Biomass.csv') %>% 
+  filter(., !Sterility=='?') 
+bio$Condition <- gsub(' ','',bio$Condition)
+
+shoot <- filter(bio, Type=='Shoot')
+root <- filter(bio, Type == 'Root')
+```
+
+# Shoot Biomass
+
+## Model
+
+```{r}
+par(mfrow=c(2,2))
+
+mod <- lm(Biomass_g ~ Sterility*Fertilization*Condition, data = shoot)
+plot(mod)
+
+aov_mod <- aov(mod)
+summary(aov_mod) 
+
+t <- HSD.test(mod, "Condition");t
+t <- HSD.test(mod, "Sterility");t
+t <- HSD.test(mod, "Fertilization");t
+
+e <- emmeans(mod, pairwise ~ Fertilization*Condition)
+e.df <- as.data.frame(e$contrasts) %>% 
+  filter(., p.value < 0.05) 
+e.df
+
+e <- emmeans(mod, pairwise ~ Fertilization*Condition*Sterility)
+e.df <- as.data.frame(e$contrasts) %>% 
+  filter(., p.value < 0.05) 
+e.df
+
+
+
+plot(e[[1]], horizontal=F)
+groups <- data.frame(multcomp::cld(e[[1]], adjust='fdr', Letters=c("abcdefghijklmnopqrstuvwxy"), decreasing=T))
+groups <- groups %>%
+  arrange(Fertilization, Condition, Sterility)
+
+```
+
+## Graph
+
+```{r}
+sum_shoot <-summarise(group_by(shoot,Sterility, Fertilization, Condition),
+  n = n(),
+  mean = mean(Biomass_g),
+  sd = sd(Biomass_g),
+  se = sd/sqrt(n))
+
+sum_sl <- left_join(sum_shoot,groups, by = c('Fertilization', 'Condition', 'Sterility'))
+
+names(sum_sl)[names(sum_sl) == '.group'] <- 'letters'
+sum_sl$letters <- gsub(' ','',sum_sl$letters)
+
+p1<-ggplot(sum_sl, aes(Fertilization, mean, fill = Condition)) +
+  facet_wrap(~Sterility)+
+  geom_col(position = 'dodge') +
+  geom_text(aes(label = letters),position=position_dodge(0.9), vjust = -0.5, hjust = -0.2) +
+  scale_fill_brewer(palette = 'Paired', breaks=c("No_Plant","Wild","Modern")) +  
+  labs(y='Dry Shoot Biomass (g)')+
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),position=position_dodge(0.9), width = .25)+
+ theme(axis.text=element_text(size=14, colour = "black"), 
+        axis.title=element_text(size=12,face="bold"),
+        axis.line = element_line(colour = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.title.x = element_blank());p1
+ggsave(plot=p1, '../Data/R_PPT_figs/shootbiomassa_S-F-C_interaction.png',height=6,width=10)
+```
+
+# Root Biomass
+
+## Model
+
+```{r}
+mod <- lm(Biomass_g ~ Sterility*Fertilization*Condition, data = root)
+plot(mod)
+
+aov_mod <- aov(mod)
+summary(aov_mod) 
+
+t <- HSD.test(mod, "Condition");t
+t <- HSD.test(mod, "Fertilization");t
+
+e <- emmeans(mod, pairwise ~ Fertilization*Condition)
+e.df <- as.data.frame(e$contrasts) %>% 
+  filter(., p.value < 0.05) 
+
+
+plot(e[[1]], horizontal=F)
+groups <- data.frame(multcomp::cld(e[[1]], adjust='fdr', Letters=c("abcdefghijklmnopqrstuvwxy"), decreasing=T))
+groups <- groups %>%
+  arrange(Fertilization, Condition)
+
+```
+
+## Graph
+
+```{r}
+sum_root <-summarise(group_by(root,Sterility, Fertilization, Condition),
+  n = n(),
+  mean = mean(Biomass_g),
+  sd = sd(Biomass_g),
+  se = sd/sqrt(n))
+
+sum_rl <- left_join(sum_root,groups, by = c('Fertilization', 'Condition'))
+
+names(sum_rl)[names(sum_rl) == '.group'] <- 'letters'
+sum_rl$letters <- gsub(' ','',sum_rl$letters)
+
+p2<-ggplot(sum_rl, aes(Fertilization, mean, fill = Condition)) +
+  facet_wrap(~Sterility)+
+  geom_col(position = 'dodge') +
+  geom_text(aes(label = letters),position=position_dodge(0.9), vjust = -0.5, hjust = -0.2) +
+  scale_fill_brewer(palette = 'Paired', breaks=c("No_Plant","Wild","Modern")) +  
+  labs(y='Dry Root Biomass (g)')+
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),position=position_dodge(0.9), width = .25)+
+ theme(axis.text=element_text(size=14, colour = "black"), 
+        axis.title=element_text(size=12,face="bold"),
+        axis.line = element_line(colour = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.title.x = element_blank());p2
+ggsave(plot=p2, '../Data/R_PPT_figs/rootbiomass.png',height=6,width=10)
+```
+
+# Root to shoot ratio
+
+## Get data
+
+```{r}
+bio_wide <- pivot_wider(bio, names_from = Type, values_from = Biomass_g) %>% 
+  mutate(., Ratio = Root/Shoot)
+```
+
+## Model
+
+```{r}
+mod <- lm(log(Ratio) ~ Sterility*Fertilization*Condition, data = bio_wide)
+plot(mod)
+
+aov_mod <- aov(mod)
+summary(aov_mod) 
+```
+
+## Graph
+
+```{r}
+sum_rs <-summarise(group_by(bio_wide,Sterility, Fertilization, Condition),
+  n = n(),
+  mean = mean(Ratio),
+  sd = sd(Ratio),
+  se = sd/sqrt(n))
+
+sum_rs$Condition <- gsub(' ','',sum_rs$Condition)
+
+p3<-ggplot(sum_rs, aes(Fertilization, mean, fill = Condition)) +
+  facet_wrap(~Sterility)+
+  geom_col(position = 'dodge') +
+  scale_fill_brewer(palette = 'Paired', breaks=c("No_Plant","Wild","Modern")) +  
+  labs(y='Root-to-Shoot Ratio (g/g)')+
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se),position=position_dodge(0.9), width = .25)+
+ theme(axis.text=element_text(size=14, colour = "black"), 
+        axis.title=element_text(size=12,face="bold"),
+        axis.line = element_line(colour = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.title.x = element_blank());p3
+ggsave(plot=p2, '../Data/R_PPT_figs/rootbiomass.png',height=6,width=10)
+```
