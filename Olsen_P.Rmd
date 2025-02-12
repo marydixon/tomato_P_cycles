@@ -13,7 +13,6 @@ output:
 ---
 
 ```{r}
-library(patchwork)
 library(tidyverse)
 library(emmeans)
 library(RColorBrewer)
@@ -26,7 +25,90 @@ library(agricolae)
 ```{r}
 d <- read.csv('../Data/inputs/Olsen_P.csv') %>% 
   filter(!is.na(Olsen_ppm)) 
+d$soil.conditioning <- gsub('W','Wild',d$soil.conditioning)
+d$soil.conditioning <- gsub('M','Modern',d$soil.conditioning)
+d$soil.conditioning <- gsub('O','No_Plant',d$soil.conditioning)
+
+d$Fertilization <- gsub('FF','Fertilized_Fertilized',d$Fertilization)
+d$Fertilization <- gsub('UF','Unfertilized_Fertilized',d$Fertilization)
+d$Fertilization <- gsub('FU','Fertilized_Unfertilized',d$Fertilization)
+d$Fertilization <- gsub('UU','Unfertilized_Unfertilized',d$Fertilization)
+
+d$Sterility <- gsub('S','Sterile',d$Sterility)
+d$Sterility <- gsub('N','Not_Sterile',d$Sterility)
+
+d <- d %>%
+mutate(soil.conditioning = as_factor(soil.conditioning)) %>%
+mutate(soil.conditioning = fct_relevel(soil.conditioning, "Wild", "Modern", "No_Plant"))
+table(d$soil.conditioning)
+d <- d %>%
+mutate(Fertilization = as_factor(Fertilization)) %>%
+mutate(Fertilization = fct_relevel(Fertilization, "Unfertilized_Unfertilized", "Fertilized_Unfertilized", "Unfertilized_Fertilized",  "Fertilized_Fertilized"))
+table(d$Fertilization)
+
+par(mfrow=c(2,2))
 ```
+
+```{r}
+mod <- lm((Olsen_ppm) ~ Sterility*Fertilization*soil.conditioning, data = d)
+plot(mod)
+Anova(mod, type = 3)
+emmip(mod, Condition ~ Sterility | Fertilization, CIs = TRUE, type = "response")# type = response shows backtransformed 
+
+emmeans(mod, pairwise ~ Condition|Fertilization|Sterility)
+
+# emmeans(mod, ~ Fertilization*Domestication*Harvest)
+
+emmeans(mod, ~ Fertilization, type = "response")
+df <- as.data.frame(emmeans(mod, ~ Fertilization, type = "response"))
+
+res <- emmeans(mod, list(pairwise ~ Fertilization), adjust = "fdr")
+plot(res[[1]], horizontal=T)
+groups <- data.frame(multcomp::cld(res[[1]], adjust='fdr', Letters=c("abcdefghijklmnopqrstuvwxy"), decreasing=T)) %>% 
+  select(., Fertilization, soil.conditioning, Sterility, .group)
+df <- inner_join(df,groups, by = c('Fertilization', 'Condition', 'Sterility'))
+
+names(df)[names(df) == '.group'] <- 'letters'
+df$letters <- gsub(' ','',df$letters)
+```
+
+```{r}
+p <- ggplot(aes(x=Fertilization, y=emmean, fill = Condition), data = df) +
+  geom_col(position = 'dodge') +
+  geom_errorbar(position = position_dodge(0.9),width=0.25,alpha=0.5,
+                aes(ymin = emmean-SE, ymax = emmean+SE))+
+  scale_fill_manual(values = c('darkorange2','darkblue','yellow3'))+
+  geom_text(aes(label = letters),position=position_dodge(0.9), vjust = -1, hjust = 0) +
+  facet_wrap(~Sterility, ncol=2)+
+  theme_classic()+
+  labs(y="Shoot Biomass")+
+  theme(legend.title = element_blank(),
+        legend.position = 'right',
+        axis.text = element_text(color='black'),
+        axis.text.x = element_text(angle = 90),
+        axis.title.x = element_blank());p
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # Model Fitting
 
@@ -55,11 +137,27 @@ d.sum <-summarise(group_by(d,Sterility, Fertilization, soil.conditioning),
   sd = sd(Olsen_ppm),
   se = sd/sqrt(n)) %>% 
   arrange(., by=Fertilization) 
-d.sum$letters<-c('a','a','a','a','a','a','c','c','c','c','c','c','b','b','b','b','b','b','d','d','d','d','d','d')
+d.sum$letters<-c('d','d','d','d','d','d','c','c','c','c','c','c','b','b','b','b','b','b','a','a','a','a','a','a')
 
 
 names(sum_rl)[names(sum_rl) == '.group'] <- 'letters'
 sum_rl$letters <- gsub(' ','',sum_rl$letters)
+
+
+p <- ggplot(aes(x=Fertilization, y=mean, fill = soil.conditioning), data = d.sum) +
+  geom_col(position = 'dodge') +
+  geom_errorbar(position = position_dodge(0.9),width=0.25,alpha=0.5,
+                aes(ymin = mean-se, ymax = mean+se))+
+  scale_fill_manual(values = c('darkorange2','darkblue','yellow3'))+
+  geom_text(aes(label = letters),position=position_dodge(0.9), vjust = -1, hjust = 0) +
+  facet_wrap(~Sterility, ncol=2)+
+  theme_classic()+
+  labs(y="Olsen P (mg/kg)")+
+  theme(legend.title = element_blank(),
+        legend.position = 'right',
+        axis.text = element_text(color='black'),
+        axis.text.x = element_text(angle = 90),
+        axis.title.x = element_blank());p
 
 p2<-ggplot(d.sum, aes(Fertilization, mean, fill = soil.conditioning)) +
   facet_wrap(~Sterility)+
