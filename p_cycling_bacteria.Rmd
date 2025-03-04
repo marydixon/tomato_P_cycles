@@ -1,0 +1,282 @@
+---
+title: "P Cycling Bacteria"
+author: "MD"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(agricolae)
+library(car)
+library(phyloseq)
+library(emmeans)
+library(RColorBrewer)
+library(vegan)
+library(ggbeeswarm)
+library(pairwiseAdonis)
+par(mfrow=c(2,2))
+
+```
+
+
+```{r}
+P.rel <- readRDS('phyloseq/P.rel.cycle.RDS') %>% 
+  subset_samples(., Reads_16S > 10000) %>% 
+  subset_samples(., Sample_Type == 'Rhizosphere soil')
+P.count <- readRDS('phyloseq/P.count.cycle.RDS')%>% 
+  subset_samples(., Reads_16S > 10000) %>% 
+  subset_samples(., Sample_Type == 'Rhizosphere soil')
+kegg <- read_excel('EMU_database.GIBBs.KO.PICRUST2.xlsx', sheet='EMU_database.GIBBs.PICRUSt2', range='B9:BE17565')
+kegg <- kegg %>%
+  mutate_if(is.numeric, replace_na, replace=0)
+```
+# P decomp
+```{r}
+wanted <- kegg[kegg$phoA > 0 | kegg$phoD > 0 | kegg$PHO > 0 | kegg$appA > 0 | kegg$phoN > 0 ,  ]$Species
+P.sub <- subset_taxa(P.rel, Species %in% wanted)
+
+P.glom <- tax_glom(P.sub, taxrank="Species")
+P.glom <- prune_taxa(taxa_sums(P.glom) > 0, P.glom)
+pdecomp <- psmelt(P.glom) %>% 
+  filter(., Abundance != 0)
+pdecomp$Fert_Pattern <- gsub('-','_', pdecomp$Fert_Pattern)
+pdecomp$C1_plant_condition <- gsub('-','_', pdecomp$C1_plant_condition)
+pdecomp$Autoclave_status <- gsub(' ','_', pdecomp$Autoclave_status)
+s.pdecomp <- filter(pdecomp, Autoclave_status == "Sterile_Soil")
+n.pdecomp <- filter(pdecomp, Autoclave_status == "Not_Sterile_Soil")
+```
+### Sterile
+
+```{r}
+
+mod <- lm(log(Abundance) ~ Fert_Pattern*C1_plant_condition, data = s.pdecomp)
+plot(mod)
+
+
+Anova(mod, type = 3)
+emmip(mod, C1_plant_condition ~ Fert_Pattern, CIs = TRUE, type = "response")# type = response shows backtransformed 
+
+emmeans(mod, pairwise ~ C1_plant_condition|Fert_Pattern)
+
+# emmeans(mod, ~ Fertilization*Domestication*Harvest)
+
+emmeans(mod, ~ C1_plant_condition*Fert_Pattern, type = "response")
+df <- as.data.frame(emmeans(mod, ~ C1_plant_condition*Fert_Pattern, type = "response"))
+
+res <- emmeans(mod, list(pairwise ~ C1_plant_condition*Fert_Pattern), adjust = "fdr")
+plot(res[[1]], horizontal=T)
+groups <- data.frame(multcomp::cld(res[[1]], adjust='fdr', Letters=c("abcdefghijklmnopqrstuvwxy"), decreasing=T)) %>% 
+  select(., Fert_Pattern, C1_plant_condition, .group)
+df <- inner_join(df,groups, by = c('Fert_Pattern', 'C1_plant_condition'))
+
+names(df)[names(df) == '.group'] <- 'letters'
+df$letters <- gsub(' ','',df$letters)
+df <- df %>%
+mutate(C1_plant_condition = as_factor(C1_plant_condition)) %>%
+mutate(C1_plant_condition = fct_relevel(C1_plant_condition,"No_plant","Wild",  "Modern"))
+table(df$C1_plant_condition)
+df <- df %>%
+mutate(Fert_Pattern = as_factor(Fert_Pattern)) %>%
+mutate(Fert_Pattern = fct_relevel(Fert_Pattern, "Unfertilized_Unfertilized",  "Unfertilized_Fertilized", "Fertilized_Unfertilized", "Fertilized_Fertilized"))
+table(df$Fert_Pattern)
+```
+
+```{r}
+p.sd <- ggplot(aes(x=Fert_Pattern, y=response, fill = C1_plant_condition), data = df) +
+  geom_col(position = 'dodge') +
+  geom_errorbar(position = position_dodge(0.9),width=0.25,alpha=0.5,
+                aes(ymin = lower.CL, ymax = upper.CL))+
+  scale_fill_manual(values = c('yellow3','darkorange2','darkblue'))+
+  geom_text(aes(label = letters),position=position_dodge(0.9), vjust = -1, hjust = 0) +
+  theme_classic()+
+  labs(y="Relative Abundance")+
+  coord_cartesian(ylim = c(0.0000,0.0018))+
+  theme(legend.title = element_blank(),
+        legend.position = 'right',
+        axis.text = element_text(color='black'),
+        axis.text.x = element_text(angle = 90),
+        axis.title.x = element_blank());p.sd
+```
+
+### Not steril
+
+```{r}
+
+mod <- lm(log(Abundance) ~ Fert_Pattern*C1_plant_condition, data = n.pdecomp)
+plot(mod)
+
+
+Anova(mod, type = 3)
+emmip(mod, C1_plant_condition ~ Fert_Pattern, CIs = TRUE, type = "response")# type = response shows backtransformed 
+
+emmeans(mod, pairwise ~ C1_plant_condition|Fert_Pattern)
+
+# emmeans(mod, ~ Fertilization*Domestication*Harvest)
+
+emmeans(mod, ~ C1_plant_condition*Fert_Pattern, type = "response")
+df <- as.data.frame(emmeans(mod, ~ C1_plant_condition*Fert_Pattern, type = "response"))
+
+res <- emmeans(mod, list(pairwise ~ C1_plant_condition*Fert_Pattern), adjust = "fdr")
+plot(res[[1]], horizontal=T)
+groups <- data.frame(multcomp::cld(res[[1]], adjust='fdr', Letters=c("abcdefghijklmnopqrstuvwxy"), decreasing=T)) %>% 
+  select(., Fert_Pattern, C1_plant_condition, .group)
+df <- inner_join(df,groups, by = c('Fert_Pattern', 'C1_plant_condition'))
+
+names(df)[names(df) == '.group'] <- 'letters'
+df$letters <- gsub(' ','',df$letters)
+df <- df %>%
+mutate(C1_plant_condition = as_factor(C1_plant_condition)) %>%
+mutate(C1_plant_condition = fct_relevel(C1_plant_condition,"No_plant","Wild",  "Modern"))
+table(df$C1_plant_condition)
+df <- df %>%
+mutate(Fert_Pattern = as_factor(Fert_Pattern)) %>%
+mutate(Fert_Pattern = fct_relevel(Fert_Pattern, "Unfertilized_Unfertilized",  "Unfertilized_Fertilized", "Fertilized_Unfertilized", "Fertilized_Fertilized"))
+table(df$Fert_Pattern)
+```
+
+```{r}
+p.nd <- ggplot(aes(x=Fert_Pattern, y=response, fill = C1_plant_condition), data = df) +
+  geom_col(position = 'dodge') +
+  geom_errorbar(position = position_dodge(0.9),width=0.25,alpha=0.5,
+                aes(ymin = lower.CL, ymax = upper.CL))+
+  scale_fill_manual(values = c('yellow3','darkorange2','darkblue'))+
+  geom_text(aes(label = letters),position=position_dodge(0.9), vjust = -1, hjust = 0) +
+  theme_classic()+
+  labs(y="Relative Abundance")+
+  theme(legend.title = element_blank(),
+        legend.position = 'right',
+        axis.text = element_text(color='black'),
+        axis.text.x = element_text(angle = 90),
+        axis.title.x = element_blank());p.nd
+```
+
+
+# P sol
+```{r}
+wanted <- kegg[kegg$pqqC > 0  ,  ]$Species
+P.sub <- subset_taxa(P.rel, Species %in% wanted)
+
+P.glom <- tax_glom(P.sub, taxrank="Species")
+P.glom <- prune_taxa(taxa_sums(P.glom) > 0, P.glom)
+psol <- psmelt(P.glom) %>% 
+  filter(., Abundance != 0)
+psol$Fert_Pattern <- gsub('-','_', psol$Fert_Pattern)
+psol$C1_plant_condition <- gsub('-','_', psol$C1_plant_condition)
+psol$Autoclave_status <- gsub(' ','_', psol$Autoclave_status)
+s.psol <- filter(psol, Autoclave_status == "Sterile_Soil")
+n.psol <- filter(psol, Autoclave_status == "Not_Sterile_Soil")
+```
+### Sterile
+
+```{r}
+
+mod <- lm(log(Abundance) ~ Fert_Pattern*C1_plant_condition, data = s.psol)
+plot(mod)
+
+
+Anova(mod, type = 3)
+emmip(mod, C1_plant_condition ~  Fert_Pattern, CIs = TRUE, type = "response")# type = response shows backtransformed 
+
+emmeans(mod, pairwise ~ C1_plant_condition|Fert_Pattern)
+
+# emmeans(mod, ~ Fertilization*Domestication*Harvest)
+
+emmeans(mod, ~ C1_plant_condition*Fert_Pattern, type = "response")
+df <- as.data.frame(emmeans(mod, ~ C1_plant_condition*Fert_Pattern, type = "response"))
+
+res <- emmeans(mod, list(pairwise ~ C1_plant_condition*Fert_Pattern), adjust = "fdr")
+plot(res[[1]], horizontal=T)
+groups <- data.frame(multcomp::cld(res[[1]], adjust='fdr', Letters=c("abcdefghijklmnopqrstuvwxy"), decreasing=T)) %>% 
+  select(., Fert_Pattern, C1_plant_condition, .group)
+df <- inner_join(df,groups, by = c('Fert_Pattern', 'C1_plant_condition'))
+
+names(df)[names(df) == '.group'] <- 'letters'
+df$letters <- gsub(' ','',df$letters)
+df <- df %>%
+mutate(C1_plant_condition = as_factor(C1_plant_condition)) %>%
+mutate(C1_plant_condition = fct_relevel(C1_plant_condition, "No_plant", "Wild", "Modern" ))
+table(df$C1_plant_condition)
+df <- df %>%
+mutate(Fert_Pattern = as_factor(Fert_Pattern)) %>%
+mutate(Fert_Pattern = fct_relevel(Fert_Pattern, "Unfertilized_Unfertilized", "Unfertilized_Fertilized", "Fertilized_Unfertilized",  "Fertilized_Fertilized"))
+table(df$Fert_Pattern)
+```
+
+```{r}
+p.ss <- ggplot(aes(x=Fert_Pattern, y=response, fill = C1_plant_condition), data = df) +
+  geom_col(position = 'dodge') +
+  geom_errorbar(position = position_dodge(0.9),width=0.25,alpha=0.5,
+                aes(ymin = lower.CL, ymax = upper.CL))+
+  scale_fill_manual(values = c('yellow3','darkorange2','darkblue'))+
+  geom_text(aes(label = letters),position=position_dodge(0.9), vjust = -1, hjust = 0) +
+  theme_classic()+
+  labs(y="Relative Abundance")+
+  theme(legend.title = element_blank(),
+        legend.position = 'right',
+        axis.text = element_text(color='black'),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank());p.ss
+```
+
+### Not sterile
+```{r}
+
+mod <- lm(log(Abundance) ~ Fert_Pattern*C1_plant_condition, data = n.psol)
+plot(mod)
+
+
+Anova(mod, type = 3)
+emmip(mod, C1_plant_condition ~  Fert_Pattern, CIs = TRUE, type = "response")# type = response shows backtransformed 
+
+emmeans(mod, pairwise ~ C1_plant_condition|Fert_Pattern)
+
+# emmeans(mod, ~ Fertilization*Domestication*Harvest)
+
+emmeans(mod, ~ C1_plant_condition*Fert_Pattern, type = "response")
+df <- as.data.frame(emmeans(mod, ~ C1_plant_condition*Fert_Pattern, type = "response"))
+
+res <- emmeans(mod, list(pairwise ~ C1_plant_condition*Fert_Pattern), adjust = "fdr")
+plot(res[[1]], horizontal=T)
+groups <- data.frame(multcomp::cld(res[[1]], adjust='fdr', Letters=c("abcdefghijklmnopqrstuvwxy"), decreasing=T)) %>% 
+  select(., Fert_Pattern, C1_plant_condition, .group)
+df <- inner_join(df,groups, by = c('Fert_Pattern', 'C1_plant_condition'))
+
+names(df)[names(df) == '.group'] <- 'letters'
+df$letters <- gsub(' ','',df$letters)
+df <- df %>%
+mutate(C1_plant_condition = as_factor(C1_plant_condition)) %>%
+mutate(C1_plant_condition = fct_relevel(C1_plant_condition, "No_plant", "Wild", "Modern" ))
+table(df$C1_plant_condition)
+df <- df %>%
+mutate(Fert_Pattern = as_factor(Fert_Pattern)) %>%
+mutate(Fert_Pattern = fct_relevel(Fert_Pattern, "Unfertilized_Unfertilized", "Unfertilized_Fertilized", "Fertilized_Unfertilized",  "Fertilized_Fertilized"))
+table(df$Fert_Pattern)
+```
+
+```{r}
+p.ns <- ggplot(aes(x=Fert_Pattern, y=response, fill = C1_plant_condition), data = df) +
+  geom_col(position = 'dodge') +
+  geom_errorbar(position = position_dodge(0.9),width=0.25,alpha=0.5,
+                aes(ymin = lower.CL, ymax = upper.CL))+
+  scale_fill_manual(values = c('yellow3','darkorange2','darkblue'))+
+  geom_text(aes(label = letters),position=position_dodge(0.9), vjust = -1, hjust = 0) +
+  theme_classic()+
+  labs(y="Relative Abundance")+
+  theme(legend.title = element_blank(),
+        legend.position = 'right',
+        axis.text = element_text(color='black'),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank());p.ns
+```
+
+# Graph
+```{r}
+p.ss/p.sd + plot_layout(axis_titles = "collect") + plot_layout(guides = "collect")
+p.ns/p.nd + plot_layout(axis_titles = "collect") + plot_layout(guides = "collect")
+
+``` 
+
