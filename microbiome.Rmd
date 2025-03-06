@@ -1,0 +1,892 @@
+---
+title: "boing"
+author: "MD"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(car)
+library(phyloseq)
+library(emmeans)
+library(vegan)
+library(ggbeeswarm)
+library(pairwiseAdonis)
+library(patchwork)
+```
+
+
+```{r}
+
+P.count <- readRDS('phyloseq/P.count.cycle.RDS')%>% 
+  subset_samples(., Reads_16S > 10000) %>% 
+  subset_samples(., Sample_Type == 'Rhizosphere soil')
+kegg <- read_excel('EMU_database.GIBBs.KO.PICRUST2.xlsx', sheet='EMU_database.GIBBs.PICRUSt2', range='B9:BE17565')
+kegg <- kegg %>%
+  mutate_if(is.numeric, replace_na, replace=0)
+```
+
+
+```{r}
+colnames(tax_table(P.count)) <- c('Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species')
+p.fs <- subset_samples(P.count, Autoclave_status == 'Sterile Soil' 
+                            & Fert_Pattern != "Unfertilized-Unfertilized"
+                            & Fert_Pattern != "Unfertilized-Fertilized")
+p.us <- subset_samples(P.count, Autoclave_status == 'Sterile Soil' 
+                            & Fert_Pattern != "Fertilized-Unfertilized"
+                            & Fert_Pattern != "Fertilized-Fertilized")
+p.fn <- subset_samples(P.count, Autoclave_status == 'Not Sterile Soil' 
+                            & Fert_Pattern != "Unfertilized-Unfertilized"
+                            & Fert_Pattern != "Unfertilized-Fertilized")
+p.un <- subset_samples(P.count, Autoclave_status == 'Not Sterile Soil' 
+                            & Fert_Pattern != "Fertilized-Unfertilized"
+                            & Fert_Pattern != "Fertilized-Fertilized")
+
+```
+
+# Fertilized sterile
+
+## Generate df for each dom group
+
+### Modern - wild
+```{r}
+out.glom <- microbiomeMarker::run_deseq2(
+  p.fs, 
+  group="C1_plant_condition",
+  taxa_rank="Species",
+  norm="RLE",
+  transform="identity",
+  p_adjust='fdr', 
+  pvalue_cutoff=1,
+  contrast=c('Modern','Wild'))
+mod_wild<-data.frame(microbiomeMarker::marker_table(out.glom)) %>% 
+  mutate(., Group = 'Modern-Wild')
+```
+
+### Modern - no plant
+```{r}
+out.glom <- microbiomeMarker::run_deseq2(
+  p.fs, 
+  group="C1_plant_condition",
+  taxa_rank="Species",
+  norm="RLE",
+  transform="identity",
+  p_adjust='fdr', 
+  pvalue_cutoff=1,
+  contrast=c('Modern','No-plant'))
+mod_noplant<-data.frame(microbiomeMarker::marker_table(out.glom))  %>% 
+  mutate(., Group = 'Modern-No.Plant')
+```
+
+
+### No plant - wild
+
+```{r}
+out.glom <- microbiomeMarker::run_deseq2(
+  p.fs, 
+  group="C1_plant_condition",
+  taxa_rank="Species",
+  norm="RLE",
+  transform="identity",
+  p_adjust='fdr', 
+  pvalue_cutoff=1,
+  contrast=c('Wild','No-plant'))
+noplant_wild<-data.frame(microbiomeMarker::marker_table(out.glom))  %>% 
+  mutate(., Group = 'No.Plant-Wild')
+```
+
+## Finalize and clean combined df
+### Combine df
+```{r}
+all <- rbind(mod_noplant, mod_wild, noplant_wild)
+```
+
+### Add significance
+```{r}
+all$sig <- ifelse(all$padj>0.05, "NS",
+                                       ifelse(all$padj==0.05, "NS",
+                                              ifelse(abs(all$ef_logFC)<2, "NS", "sig")))
+all$sig.trt <- paste(all$enrich_group,all$sig)
+
+
+all$colors <- ifelse(all$sig=="NS", "NS",
+                        ifelse(all$sig.trt=='Modern sig',"Modern",
+                               ifelse(all$sig.trt=='No.plant sig','No Plant',
+                                      ifelse(all$sig.trt== "Wild sig", "Wild", NA))))
+
+all <- all %>%
+mutate(colors = as_factor(colors)) %>%
+mutate(colors = fct_relevel(colors, "No Plant", "Wild", "Modern", "NS"))
+all <- all %>%
+mutate(Group = as_factor(Group)) %>%
+mutate(Group = fct_relevel(Group, "No.Plant-Wild", "Modern-Wild", "Modern-No.Plant"))
+all<- arrange(all, -log(padj),ef_logFC)
+
+```
+
+## graph
+### Volcano plot
+
+```{r}
+p.fsvol<-ggplot(data=all)+
+  geom_point(alpha=0.85,mapping= aes(
+    fill=colors, x=ef_logFC,y=-log(padj)),
+    size=5,color='black',pch=21) +
+  scale_fill_manual(values = c('yellow3','darkorange2','darkblue','gray70'))+
+  theme_classic()+
+  facet_wrap(~Group, ncol=1, scales = "free")+
+  labs(y=expression("-log"["10"] ~ "p" ["adj"]), 
+       x=expression("log"["2"]~"Fold Change"))+
+  theme(axis.text=element_text(size=10, colour = "black"), 
+        axis.line = element_line(colour = "black"),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"),
+        legend.title = element_blank());p.fsvol
+```
+
+### dot plot
+
+
+```{r}
+d <- filter(all, padj < 0.05 & abs(ef_logFC)>2)
+d.list <- d$feature 
+keggsub <- filter(kegg, Species %in% d.list)
+names(d)[names(d) == 'feature'] <- 'Species'
+d.kegg <- left_join(d,keggsub, by = 'Species') %>% 
+  filter(!NSTI=='NA')
+
+d<- pivot_longer(d.kegg, cols=hcnA:nosZ, names_to = 'Gene', values_to = 'value') %>%   filter(!value==0)
+
+d$Function <- ifelse(d$Gene=="hcnA", "Biocontrol",
+                     ifelse(d$Gene=="budA","Biocontrol",
+                     ifelse(d$Gene=="budC","Biocontrol",
+                     ifelse(d$Gene=="E3.2.1.6","Biocontrol",
+                     ifelse(d$Gene=="E3.2.1.14","Biocontrol",
+                     ifelse(d$Gene=="phlD","Biocontrol",
+                     ifelse(d$Gene=="ituA","Biocontrol", 
+                     ifelse(d$Gene=="fenA", "Biocontrol",
+                     ifelse(d$Gene=="srfAA","Biocontrol",
+                     ifelse(d$Gene=="rifM","Biocontrol",
+                     ifelse(d$Gene=="phzE","Biocontrol",
+                     ifelse(d$Gene=="ipdC","Stress",
+                     ifelse(d$Gene=="acdS","Stress",
+                     ifelse(d$Gene=="mbtI","Siderophore",
+                     ifelse(d$Gene=="entA", "Siderophore",
+                     ifelse(d$Gene=="pchB","Siderophore",
+                     ifelse(d$Gene=="bglX","C decomposition",
+                     ifelse(d$Gene=="bglB","C decomposition",
+                     ifelse(d$Gene=="E3.2.1.21","C decomposition",  
+                     ifelse(d$Gene=="amiE","N decomposition",  
+                     ifelse(d$Gene=="ureC","N decomposition",  
+                     ifelse(d$Gene=="pqqC", "PO4 solubility",
+                     ifelse(d$Gene=="phoA","P decomposition",
+                     ifelse(d$Gene=="phoD","P decomposition",
+                     ifelse(d$Gene=="PHO","P decomposition",
+                     ifelse(d$Gene=="appA","P decomposition", 
+                     ifelse(d$Gene=="phoN","P decomposition",
+                     ifelse(d$Gene=="aslA","S decomposition",
+                     ifelse(d$Gene=="nifH", "N-fixation",
+                     ifelse(d$Gene=="nifD","N-fixation",
+                     ifelse(d$Gene=="nifK","N-fixation",
+                     ifelse(d$Gene=="pmoA-amoA","Nitrification",
+                     ifelse(d$Gene=="hao","Nitrification",             
+                     ifelse(d$Gene=="nirB","Dissimilatory nitrate reduction",    
+                     ifelse(d$Gene=="nirD","Dissimilatory nitrate reduction",              
+                     ifelse(d$Gene=="nrfA", "Dissimilatory nitrate reduction",
+                     ifelse(d$Gene=="nirA","Assimilatory nitrate reduction",
+                     ifelse(d$Gene=="NIT-6","Assimilatory nitrate reduction",
+                     ifelse(d$Gene=="narG","Denitrification",
+                     ifelse(d$Gene=="narH","Denitrification",
+                     ifelse(d$Gene=="nirK","Denitrification",    
+                     ifelse(d$Gene=="nirS","Denitrification",
+                     ifelse(d$Gene=="norB", "Denitrification",
+                     ifelse(d$Gene=="norC","Denitrification", 
+                     ifelse(d$Gene=='nosZ','Denitrification',
+                     NA)))))))))))))))))))))))))))))))))))))))))))))
+
+d<- arrange(d, Function)
+d_sum <- summarise(group_by(d,Gene,Function,enrich_group,Group, Species),
+                   mean.lfc = mean(ef_logFC),
+                   mean.p = mean(padj))
+
+d_sum <- filter(d_sum, Function != 'Assimilatory nitrate reduction') %>% 
+         filter(., Function !=  'Dissimilatory nitrate reduction') %>% 
+         filter(., Function != 'Denitrification')
+
+d_sum <- d_sum %>%
+mutate(Function = as_factor(Function)) %>%
+mutate(Function = fct_relevel(Function, "Biocontrol",
+                                           "Stress",
+                                           "S decomposition",
+                                           "C decomposition",
+                                           "N decomposition",
+                              "N-fixation",
+                                           "Nitrification",
+                                           "Siderophore",
+                                           "P decomposition",
+                                           "PO4 solubility"))
+table(d_sum$Function)
+
+
+p.bee<-ggplot(d_sum, aes(x=interaction(Species, enrich_group), y=Function, color=Gene)) + 
+ geom_hline(yintercept = 1.5, color = "gray90", linewidth = 0.25)+
+ geom_hline(yintercept = 2.5, color = "gray90", linewidth = 0.25)+
+ geom_hline(yintercept = 3.5, color = "gray90", linewidth = 0.25)+
+ geom_hline(yintercept = 4.5, color = "gray90", linewidth = 0.25)+
+ geom_hline(yintercept = 5.5, color = "gray90", linewidth = 0.25)+
+ geom_hline(yintercept = 6.5, color = "gray90", linewidth = 0.25)+
+ geom_hline(yintercept = 7.5, color = "gray90", linewidth = 0.25)+
+ geom_hline(yintercept = 8.5, color = "gray90", linewidth = 0.25)+
+ geom_vline(xintercept = 0.4, color = "black", linewidth = 0.9)+
+ geom_beeswarm(size = 6, cex=2, alpha=0.7) + 
+ scale_color_manual(values = c("#EA4691", #acds,
+                               "#6BFF33", # amie
+                               "#2929F0",  # appa
+                               "#BFE75D", #asla,
+                               "#F9FF76", #bglb
+                               "#A3A92D",  # bglx
+                               "#7667A0", #buda,
+                               "#3F2B78" ,#budc
+                               "#26194C",  #, e32114
+                               "#610185", # enta,
+                               "#A0008D", # hao
+                               "#A774B8", # pchb
+                               "#3AF6FC",# pho,
+                               "#239A9E", #phoa,
+                               "#156062",  #phod
+                               "#40008C",#phze, 
+                               "#38A2B9", #, pqqc
+                               "#38871A",#urec
+                               "#E75DD6" #pmoaamoa
+                               ))+
+    facet_grid(~Group, scales = 'free',space = "free_x")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle=90, color = 'black',hjust=0.95, vjust=0.2),
+        axis.text.y = element_text(color = 'black'),
+        axis.line = element_line(colour = "black"),
+        axis.title.y = element_blank(),
+        legend.key = element_blank(),
+        legend.title = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"),
+        axis.title.x = element_blank());p.bee
+```
+
+### Combine graphs
+```{r}
+p.vol/p.bee 
+```
+
+
+# Unfertilized sterile 
+
+## Generate df for each dom group
+
+### Modern - wild
+```{r}
+out.glom <- microbiomeMarker::run_deseq2(
+  p.us, 
+  group="C1_plant_condition",
+  taxa_rank="Species",
+  norm="RLE",
+  transform="identity",
+  p_adjust='fdr', 
+  pvalue_cutoff=1,
+  contrast=c('Modern','Wild'))
+mod_wild<-data.frame(microbiomeMarker::marker_table(out.glom)) %>% 
+  mutate(., Group = 'Modern-Wild')
+```
+
+### Modern - no plant
+```{r}
+out.glom <- microbiomeMarker::run_deseq2(
+  p.us, 
+  group="C1_plant_condition",
+  taxa_rank="Species",
+  norm="RLE",
+  transform="identity",
+  p_adjust='fdr', 
+  pvalue_cutoff=1,
+  contrast=c('Modern','No-plant'))
+mod_noplant<-data.frame(microbiomeMarker::marker_table(out.glom))  %>% 
+  mutate(., Group = 'Modern-No.Plant')
+```
+
+
+### No plant - wild
+
+```{r}
+out.glom <- microbiomeMarker::run_deseq2(
+  p.us, 
+  group="C1_plant_condition",
+  taxa_rank="Species",
+  norm="RLE",
+  transform="identity",
+  p_adjust='fdr', 
+  pvalue_cutoff=1,
+  contrast=c('Wild','No-plant'))
+noplant_wild<-data.frame(microbiomeMarker::marker_table(out.glom))  %>% 
+  mutate(., Group = 'No.Plant-Wild')
+```
+
+## Finalize and clean combined df
+### Combine df
+```{r}
+all <- rbind(mod_noplant, mod_wild, noplant_wild)
+```
+
+### Add significance
+```{r}
+all$sig <- ifelse(all$padj>0.05, "NS",
+                                       ifelse(all$padj==0.05, "NS",
+                                              ifelse(abs(all$ef_logFC)<2, "NS", "sig")))
+all$sig.trt <- paste(all$enrich_group,all$sig)
+
+
+all$colors <- ifelse(all$sig=="NS", "NS",
+                        ifelse(all$sig.trt=='Modern sig',"Modern",
+                               ifelse(all$sig.trt=='No.plant sig','No Plant',
+                                      ifelse(all$sig.trt== "Wild sig", "Wild", NA))))
+
+all <- all %>%
+mutate(colors = as_factor(colors)) %>%
+mutate(colors = fct_relevel(colors, "No Plant", "Wild", "Modern", "NS"))
+all <- all %>%
+mutate(Group = as_factor(Group)) %>%
+mutate(Group = fct_relevel(Group, "No.Plant-Wild", "Modern-Wild", "Modern-No.Plant"))
+all<- arrange(all, -log(padj),ef_logFC)
+
+```
+
+## graph
+### Volcano plot
+
+```{r}
+p.usvol<-ggplot(data=all)+
+  geom_point(alpha=0.85,mapping= aes(
+    fill=colors, x=ef_logFC,y=-log(padj)),
+    size=5,color='black',pch=21) +
+  scale_fill_manual(values = c('yellow3','darkblue','gray70'))+
+  theme_classic()+
+  ggtitle(label = "Unfertilized, Sterile")+
+  facet_wrap(~Group, ncol=1, scales = "free")+
+  labs(y=expression("-log"["10"] ~ "p" ["adj"]), 
+       x=expression("log"["2"]~"Fold Change"))+
+  theme(axis.text=element_text(size=10, colour = "black"), 
+        axis.line = element_line(colour = "black"),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"),
+        legend.title = element_blank());p.usvol
+```
+
+
+# Fertilized Unsterile 
+## Generate df for each dom group
+
+### Modern - wild
+```{r}
+out.glom <- microbiomeMarker::run_deseq2(
+  p.fn, 
+  group="C1_plant_condition",
+  taxa_rank="Species",
+  norm="RLE",
+  transform="identity",
+  p_adjust='fdr', 
+  pvalue_cutoff=1,
+  contrast=c('Modern','Wild'))
+mod_wild<-data.frame(microbiomeMarker::marker_table(out.glom)) %>% 
+  mutate(., Group = 'Modern-Wild')
+```
+
+### Modern - no plant
+```{r}
+out.glom <- microbiomeMarker::run_deseq2(
+  p.fn, 
+  group="C1_plant_condition",
+  taxa_rank="Species",
+  norm="RLE",
+  transform="identity",
+  p_adjust='fdr', 
+  pvalue_cutoff=1,
+  contrast=c('Modern','No-plant'))
+mod_noplant<-data.frame(microbiomeMarker::marker_table(out.glom))  %>% 
+  mutate(., Group = 'Modern-No.Plant')
+```
+
+
+### No plant - wild
+
+```{r}
+out.glom <- microbiomeMarker::run_deseq2(
+  p.fn, 
+  group="C1_plant_condition",
+  taxa_rank="Species",
+  norm="RLE",
+  transform="identity",
+  p_adjust='fdr', 
+  pvalue_cutoff=1,
+  contrast=c('Wild','No-plant'))
+noplant_wild<-data.frame(microbiomeMarker::marker_table(out.glom))  %>% 
+  mutate(., Group = 'No.Plant-Wild')
+```
+
+## Finalize and clean combined df
+### Combine df
+```{r}
+all <- rbind(mod_noplant, mod_wild, noplant_wild)
+```
+
+### Add significance
+```{r}
+all$sig <- ifelse(all$padj>0.05, "NS",
+                                       ifelse(all$padj==0.05, "NS",
+                                              ifelse(abs(all$ef_logFC)<2, "NS", "sig")))
+all$sig.trt <- paste(all$enrich_group,all$sig)
+
+
+all$colors <- ifelse(all$sig=="NS", "NS",
+                        ifelse(all$sig.trt=='Modern sig',"Modern",
+                               ifelse(all$sig.trt=='No.plant sig','No Plant',
+                                      ifelse(all$sig.trt== "Wild sig", "Wild", NA))))
+
+all <- all %>%
+mutate(colors = as_factor(colors)) %>%
+mutate(colors = fct_relevel(colors, "No Plant", "Wild", "Modern", "NS"))
+all <- all %>%
+mutate(Group = as_factor(Group)) %>%
+mutate(Group = fct_relevel(Group, "No.Plant-Wild", "Modern-Wild", "Modern-No.Plant"))
+all<- arrange(all, -log(padj),ef_logFC)
+
+```
+
+## graph
+### Volcano plot
+
+```{r}
+p.fnvol<-ggplot(data=all)+
+  geom_point(alpha=0.85,mapping= aes(
+    fill=colors, x=ef_logFC,y=-log(padj)),
+    size=5,color='black',pch=21) +
+  scale_fill_manual(values = c('yellow3','darkorange2','darkblue','gray70'))+
+  theme_classic()+
+  ggtitle(label = "Fertilized, Not Sterile")+
+  facet_wrap(~Group, ncol=1, scales = "free")+
+  labs(y=expression("-log"["10"] ~ "p" ["adj"]), 
+       x=expression("log"["2"]~"Fold Change"))+
+  theme(axis.text=element_text(size=10, colour = "black"), 
+        axis.line = element_line(colour = "black"),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"),
+        legend.title = element_blank());p.fnvol
+```
+
+# Unfertilized not sterile
+## Generate df for each dom group
+
+### Modern - wild
+```{r}
+out.glom <- microbiomeMarker::run_deseq2(
+  p.un, 
+  group="C1_plant_condition",
+  taxa_rank="Species",
+  norm="RLE",
+  transform="identity",
+  p_adjust='fdr', 
+  pvalue_cutoff=1,
+  contrast=c('Modern','Wild'))
+mod_wild<-data.frame(microbiomeMarker::marker_table(out.glom)) %>% 
+  mutate(., Group = 'Modern-Wild')
+```
+
+### Modern - no plant
+```{r}
+out.glom <- microbiomeMarker::run_deseq2(
+  p.un, 
+  group="C1_plant_condition",
+  taxa_rank="Species",
+  norm="RLE",
+  transform="identity",
+  p_adjust='fdr', 
+  pvalue_cutoff=1,
+  contrast=c('Modern','No-plant'))
+mod_noplant<-data.frame(microbiomeMarker::marker_table(out.glom))  %>% 
+  mutate(., Group = 'Modern-No.Plant')
+```
+
+
+### No plant - wild
+
+```{r}
+out.glom <- microbiomeMarker::run_deseq2(
+  p.un, 
+  group="C1_plant_condition",
+  taxa_rank="Species",
+  norm="RLE",
+  transform="identity",
+  p_adjust='fdr', 
+  pvalue_cutoff=1,
+  contrast=c('Wild','No-plant'))
+noplant_wild<-data.frame(microbiomeMarker::marker_table(out.glom))  %>% 
+  mutate(., Group = 'No.Plant-Wild')
+```
+
+## Finalize and clean combined df
+### Combine df
+```{r}
+all <- rbind(mod_noplant, mod_wild, noplant_wild)
+```
+
+### Add significance
+```{r}
+all$sig <- ifelse(all$padj>0.05, "NS",
+                                       ifelse(all$padj==0.05, "NS",
+                                              ifelse(abs(all$ef_logFC)<2, "NS", "sig")))
+all$sig.trt <- paste(all$enrich_group,all$sig)
+
+
+all$colors <- ifelse(all$sig=="NS", "NS",
+                        ifelse(all$sig.trt=='Modern sig',"Modern",
+                               ifelse(all$sig.trt=='No.plant sig','No Plant',
+                                      ifelse(all$sig.trt== "Wild sig", "Wild", NA))))
+
+all <- all %>%
+mutate(colors = as_factor(colors)) %>%
+mutate(colors = fct_relevel(colors, "No Plant", "Wild", "Modern", "NS"))
+all <- all %>%
+mutate(Group = as_factor(Group)) %>%
+mutate(Group = fct_relevel(Group, "No.Plant-Wild", "Modern-Wild", "Modern-No.Plant"))
+all<- arrange(all, -log(padj),ef_logFC)
+
+```
+
+## graph
+### Volcano plot
+
+```{r}
+p.unvol<-ggplot(data=all)+
+  geom_point(alpha=0.85,mapping= aes(
+    fill=colors, x=ef_logFC,y=-log(padj)),
+    size=5,color='black',pch=21) +
+  scale_fill_manual(values = c('yellow3','darkblue','gray70'))+
+  theme_classic()+
+  facet_wrap(~Group, ncol=1, scales = "free")+
+  labs(y=expression("-log"["10"] ~ "p" ["adj"]), 
+       x=expression("log"["2"]~"Fold Change"))+
+  ggtitle(label = "Unfertilized, Not Sterile")+
+  theme(axis.text=element_text(size=10, colour = "black"), 
+        axis.line = element_line(colour = "black"),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"),
+        legend.title = element_blank());p.unvol
+```
+
+### Combine graphs
+```{r}
+p.usvol + p.fnvol + p.unvol + plot_layout(guides = "collect") + plot_layout(axis_titles = "collect")
+```
+
+
+```{r}
+
+mod_wild$sig <- ifelse(mod_wild$padj>0.05, "NS",
+                                       ifelse(mod_wild$padj==0.05, "NS",
+                                              ifelse(abs(mod_wild$ef_logFC)<2, "NS", "sig")))
+mod_wild$sig.trt <- paste(mod_wild$enrich_group,mod_wild$sig)
+
+
+mod_wild$colors <- ifelse(mod_wild$sig=="NS", "NS",
+                        ifelse(mod_wild$sig.trt=='Modern sig',"Modern",
+                               ifelse(mod_wild$sig.trt=='Wild sig','Wild',NA)))
+mod_wild<- arrange(mod_wild, -log(padj))
+
+
+p<-ggplot(data=mod_wild)+
+  geom_point(alpha=0.85,mapping= aes(
+    fill=colors, x=ef_logFC,y=-log(padj)),
+    size=5,color='black',pch=21) +
+  coord_cartesian(xlim = c(-20,23))+
+  scale_fill_manual(values = c('cornflowerblue','gray50','darkorange'))+
+  theme_classic()+
+  labs(y=expression("-log"["10"] ~ "p" ["adj"]), 
+       x=expression("log"["2"]~"Fold Change"))+
+  theme(axis.text=element_text(size=10, colour = "black"), 
+        axis.line = element_line(colour = "black"),
+        legend.title = element_blank());p
+```
+
+```{r}
+
+noplant_wild$sig <- ifelse(noplant_wild$padj>0.05, "NS",
+                                       ifelse(noplant_wild$padj==0.05, "NS",
+                                              ifelse(abs(noplant_wild$ef_logFC) <2, "NS", "sig")))
+noplant_wild$sig.trt <- paste(noplant_wild$enrich_group,noplant_wild$sig)
+
+
+noplant_wild$colors <- ifelse(noplant_wild$sig=="NS", "NS",
+                        ifelse(noplant_wild$sig.trt=='No.plant sig',"No plant",
+                               ifelse(noplant_wild$sig.trt=='Wild sig','Wild',NA)))
+noplant_wild<- arrange(noplant_wild, -log(padj))
+
+p<-ggplot(data=noplant_wild)+
+  geom_point(alpha=0.85,mapping= aes(
+    fill=colors, x=ef_logFC,y=-log(padj)),
+    size=5,color='black',pch=21) +
+  scale_fill_manual(values = c('gray50','darkorange'))+
+  theme_classic()+
+  labs(y=expression("-log"["10"] ~ "p" ["adj"]), 
+       x=expression("log"["2"]~"Fold Change"))+
+  theme(axis.text=element_text(size=10, colour = "black"), 
+        axis.line = element_line(colour = "black"),
+        legend.title = element_blank());p
+```
+
+
+
+```{r}
+d <- filter(mod_wild, padj < 0.05)
+d.list <- d$feature 
+keggsub <- filter(kegg, Species %in% d.list)
+names(d)[names(d) == 'feature'] <- 'Species'
+d.kegg <- left_join(d,keggsub, by = 'Species') %>% 
+  filter(!NSTI=='NA')
+
+d<- pivot_longer(d.kegg, cols=hcnA:nosZ, names_to = 'Gene', values_to = 'value') %>%   filter(!value==0)
+
+d$Function <- ifelse(d$Gene=="hcnA", "Biocontrol",
+                     ifelse(d$Gene=="budA","Biocontrol",
+                     ifelse(d$Gene=="budC","Biocontrol",
+                     ifelse(d$Gene=="E3.2.1.6","Biocontrol",
+                     ifelse(d$Gene=="E3.2.1.14","Biocontrol",
+                     ifelse(d$Gene=="phlD","Biocontrol",
+                     ifelse(d$Gene=="ituA","Biocontrol", 
+                     ifelse(d$Gene=="fenA", "Biocontrol",
+                     ifelse(d$Gene=="srfAA","Biocontrol",
+                     ifelse(d$Gene=="rifM","Biocontrol",
+                     ifelse(d$Gene=="phzE","Biocontrol",
+                     ifelse(d$Gene=="ipdC","Stress",
+                     ifelse(d$Gene=="acdS","Stress",
+                     ifelse(d$Gene=="mbtI","Siderophore",
+                     ifelse(d$Gene=="entA", "Siderophore",
+                     ifelse(d$Gene=="pchB","Siderophore",
+                     ifelse(d$Gene=="bglX","C decomposition",
+                     ifelse(d$Gene=="bglB","C decomposition",
+                     ifelse(d$Gene=="E3.2.1.21","C decomposition",  
+                     ifelse(d$Gene=="amiE","N decomposition",  
+                     ifelse(d$Gene=="ureC","N decomposition",  
+                     ifelse(d$Gene=="pqqC", "PO4 solubility",
+                     ifelse(d$Gene=="phoA","P decomposition",
+                     ifelse(d$Gene=="phoD","P decomposition",
+                     ifelse(d$Gene=="PHO","P decomposition",
+                     ifelse(d$Gene=="appA","P decomposition", 
+                     ifelse(d$Gene=="phoN","P decomposition",
+                     ifelse(d$Gene=="aslA","S decomposition",
+                     ifelse(d$Gene=="nifH", "N-fixation",
+                     ifelse(d$Gene=="nifD","N-fixation",
+                     ifelse(d$Gene=="nifK","N-fixation",
+                     ifelse(d$Gene=="pmoA-amoA","Nitrification",
+                     ifelse(d$Gene=="hao","Nitrification",             
+                     ifelse(d$Gene=="nirB","Dissimilatory nitrate reduction",    
+                     ifelse(d$Gene=="nirD","Dissimilatory nitrate reduction",              
+                     ifelse(d$Gene=="nrfA", "Dissimilatory nitrate reduction",
+                     ifelse(d$Gene=="nirA","Assimilatory nitrate reduction",
+                     ifelse(d$Gene=="NIT-6","Assimilatory nitrate reduction",
+                     ifelse(d$Gene=="narG","Denitrification",
+                     ifelse(d$Gene=="narH","Denitrification",
+                     ifelse(d$Gene=="nirK","Denitrification",    
+                     ifelse(d$Gene=="nirS","Denitrification",
+                     ifelse(d$Gene=="norB", "Denitrification",
+                     ifelse(d$Gene=="norC","Denitrification", 
+                     ifelse(d$Gene=='nosZ','Denitrification',
+                     NA)))))))))))))))))))))))))))))))))))))))))))))
+
+d<-d %>% dplyr::select(Species, enrich_group, Fert_Pattern*Autoclave_status*C1_plant_condition, ef_logFC, padj, Fert, Gene, Function)
+d<- arrange(d, Function)
+d_sum <- summarise(group_by(d,Gene,Function,enrich_group, Species),
+                   mean.lfc = mean(ef_logFC),
+                   mean.p = mean(padj))
+
+d_sum <- filter(d_sum, Function != 'Assimilatory nitrate reduction') %>% 
+         filter(., Function !=  'Dissimilatory nitrate reduction') %>% 
+         filter(., Function != 'Denitrification')
+
+level_order <- factor(d_sum$Function, levels=c( "Biocontrol",
+                                           "Stress",
+                                           "S decomposition",
+                                           "C decomposition",
+                                           "N decomposition",
+                                           "Nitrification",
+                                           "N-fixation",
+                                           "Siderophore",
+                                           "P decomposition",
+                                           "PO4 solubility"))
+
+
+p<-ggplot(d_sum, aes(x=Species, y=level_order, color=Gene)) + 
+  geom_beeswarm(size = 4, cex=1, alpha =  0.7) + 
+  scale_color_manual(values = c("#EA4691", "#6BFF33", '#BFE75D',
+                                "#F9FF76", "#A3A92D", "#7667A0",
+                                "#3F2B78", "#26194C", "#A2CACB",
+                                "#662341", "#1BB74B", "#39FDA4",
+                                "#145437", "#239A9E", "#156062",
+                                "#A2CACB", "#38A2B9", "#38871A"))+
+   facet_wrap(~enrich_group, ncol=1,scales = 'free')+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle=90, color = 'black'),
+        axis.text.y = element_text(color = 'black'),
+        axis.line = element_line(colour = "black"),
+        axis.title.y = element_blank(),
+        legend.key = element_blank(),
+        legend.title = element_blank(),
+        strip.background = element_blank(),
+        axis.title.x = element_blank());p
+```
+
+```{r}
+d <- filter(mod_noplant, padj < 0.05)
+d.list <- d$feature 
+keggsub <- filter(kegg, Species %in% d.list)
+names(d)[names(d) == 'feature'] <- 'Species'
+d.kegg <- left_join(d,keggsub, by = 'Species') %>% 
+  filter(!NSTI=='NA')
+
+d<- pivot_longer(d.kegg, cols=hcnA:nosZ, names_to = 'Gene', values_to = 'value') %>%   filter(!value==0)
+
+d$Function <- ifelse(d$Gene=="hcnA", "Biocontrol",
+                     ifelse(d$Gene=="budA","Biocontrol",
+                     ifelse(d$Gene=="budC","Biocontrol",
+                     ifelse(d$Gene=="E3.2.1.6","Biocontrol",
+                     ifelse(d$Gene=="E3.2.1.14","Biocontrol",
+                     ifelse(d$Gene=="phlD","Biocontrol",
+                     ifelse(d$Gene=="ituA","Biocontrol", 
+                     ifelse(d$Gene=="fenA", "Biocontrol",
+                     ifelse(d$Gene=="srfAA","Biocontrol",
+                     ifelse(d$Gene=="rifM","Biocontrol",
+                     ifelse(d$Gene=="phzE","Biocontrol",
+                     ifelse(d$Gene=="ipdC","Stress",
+                     ifelse(d$Gene=="acdS","Stress",
+                     ifelse(d$Gene=="mbtI","Siderophore",
+                     ifelse(d$Gene=="entA", "Siderophore",
+                     ifelse(d$Gene=="pchB","Siderophore",
+                     ifelse(d$Gene=="bglX","C decomposition",
+                     ifelse(d$Gene=="bglB","C decomposition",
+                     ifelse(d$Gene=="E3.2.1.21","C decomposition",  
+                     ifelse(d$Gene=="amiE","N decomposition",  
+                     ifelse(d$Gene=="ureC","N decomposition",  
+                     ifelse(d$Gene=="pqqC", "PO4 solubility",
+                     ifelse(d$Gene=="phoA","P decomposition",
+                     ifelse(d$Gene=="phoD","P decomposition",
+                     ifelse(d$Gene=="PHO","P decomposition",
+                     ifelse(d$Gene=="appA","P decomposition", 
+                     ifelse(d$Gene=="phoN","P decomposition",
+                     ifelse(d$Gene=="aslA","S decomposition",
+                     ifelse(d$Gene=="nifH", "N-fixation",
+                     ifelse(d$Gene=="nifD","N-fixation",
+                     ifelse(d$Gene=="nifK","N-fixation",
+                     ifelse(d$Gene=="pmoA-amoA","Nitrification",
+                     ifelse(d$Gene=="hao","Nitrification",             
+                     ifelse(d$Gene=="nirB","Dissimilatory nitrate reduction",    
+                     ifelse(d$Gene=="nirD","Dissimilatory nitrate reduction",              
+                     ifelse(d$Gene=="nrfA", "Dissimilatory nitrate reduction",
+                     ifelse(d$Gene=="nirA","Assimilatory nitrate reduction",
+                     ifelse(d$Gene=="NIT-6","Assimilatory nitrate reduction",
+                     ifelse(d$Gene=="narG","Denitrification",
+                     ifelse(d$Gene=="narH","Denitrification",
+                     ifelse(d$Gene=="nirK","Denitrification",    
+                     ifelse(d$Gene=="nirS","Denitrification",
+                     ifelse(d$Gene=="norB", "Denitrification",
+                     ifelse(d$Gene=="norC","Denitrification", 
+                     ifelse(d$Gene=='nosZ','Denitrification',
+                     NA)))))))))))))))))))))))))))))))))))))))))))))
+
+d<-d %>% dplyr::select(Species, enrich_group, Fert_Pattern*Autoclave_status*C1_plant_condition, ef_logFC, padj, Fert, Gene, Function)
+d<- arrange(d, Function)
+d_sum <- summarise(group_by(d,Gene,Function,enrich_group, Species),
+                   mean.lfc = mean(ef_logFC),
+                   mean.p = mean(padj))
+
+d_sum <- filter(d_sum, Function != 'Assimilatory nitrate reduction') %>% 
+         filter(., Function !=  'Dissimilatory nitrate reduction') %>% 
+         filter(., Function != 'Denitrification')
+
+level_order <- factor(d_sum$Function, levels=c( "Biocontrol",
+                                           "Stress",
+                                           "S decomposition",
+                                           "C decomposition",
+                                           "N decomposition",
+                                           "Nitrification",
+                                           "N-fixation",
+                                           "Siderophore",
+                                           "P decomposition",
+                                           "PO4 solubility"))
+
+
+p<-ggplot(d_sum, aes(x=Species, y=level_order, color=Gene)) + 
+  geom_beeswarm(size = 4, cex=1, alpha =  0.7) + 
+  scale_color_manual(values = c("#EA4691", "#6BFF33", '#BFE75D',
+                                "#F9FF76", "#A3A92D", "#7667A0",
+                                "#3F2B78", "#26194C", "#A2CACB",
+                                "#662341", "#1BB74B", "#39FDA4",
+                                "#145437", "#239A9E", "#156062",
+                                "#A2CACB", "#38A2B9", "#38871A"))+
+   facet_wrap(~enrich_group, ncol=1,scales = 'free')+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle=90, color = 'black'),
+        axis.text.y = element_text(color = 'black'),
+        axis.line = element_line(colour = "black"),
+        axis.title.y = element_blank(),
+        legend.key = element_blank(),
+        legend.title = element_blank(),
+        strip.background = element_blank(),
+        axis.title.x = element_blank());p
+```
+
+
+
+
+```{r}
+d <- data.frame(sample_data(P.rel))
+
+data <- data.frame(t(otu_table(P.rel)))
+data <- decostand(data, method='hellinger')
+
+dist <- vegdist(data, method='bray')
+
+ord <- capscale(dist ~ Fert_Pattern*Autoclave_status*C1_plant_condition, data=d)
+adonis2(dist ~  Fert_Pattern*Autoclave_status*C1_plant_condition, data=d, perm=999)
+
+pairwise.adonis(dist,factors=d$Fert_Pattern, p.adjust.m = "fdr")
+pairwise.adonis(dist,factors=d$Autoclave_status, p.adjust.m = "fdr")
+pairwise.adonis(dist,factors=d$C1_plant_condition, p.adjust.m = "fdr")
+
+```
+
+```{r}
+
+ev <- eigenvals(ord)
+Axis1_exp = round(ev[1] / sum(ev) * 100, 1)
+Axis2_exp = round(ev[2] / sum(ev) * 100, 1)
+
+axes <- as.data.frame(vegan::scores(ord, display="sites", choices=c(1:2)))
+names(axes) <- c("Axis1", "Axis2")
+axes <- cbind(d, axes)
+
+p<-ggplot(data=axes, aes(x=Axis1, y=Axis2, fill=C1_plant_condition, shape=Fert_Pattern)) +
+  geom_point(size=6,color='black') +
+  stat_ellipse(aes(group= Autoclave_status, color= Autoclave_status), type='t', level=0.95) +
+scale_color_brewer(palette = 'Paired')+
+  scale_fill_brewer(palette = 'Paired')+
+    # scale_fill_manual(values = rev(brewer.pal(8, "Paired")))+
+  # scale_color_manual(values = rev(brewer.pal(8, "Paired")))+
+  scale_shape_manual(values=c(21,22,23,24)) +
+  guides(fill = guide_legend(
+    override.aes=list(shape = rep(21)))) +
+  labs(x=paste0('CAP1 (', Axis1_exp, '%)'), 
+       y=paste0('CAP2 (', Axis2_exp, '%)'),
+       alpha='none') +
+  theme_classic();p
+```
+
